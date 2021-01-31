@@ -1,9 +1,16 @@
 #!/usr/bin/python
-import sqlite3
 import argparse
 import hashlib
+import os
+import sqlite3
 
 DEFAULT_DB = "~/.local/share/walltag.db"
+BUF_SIZE = 1024
+
+COLORS = ["warm", "cool", "greyscale"]
+PEOPLE = ["many", "few", "none"]
+TIME = ["night", "day", "dawn/dusk"]
+CATEGORY_VALUES = {"color": COLORS, "people": PEOPLE, "time": TIME}
 
 
 def set_tag(db, key, tag_category, tag):
@@ -25,14 +32,30 @@ def get_all_tags(db, key):
     query = """SELECT * FROM wallpapers WHERE ID = :key"""
     cursor.execute(query, {"key": key})
     result = cursor.fetchone()
+    if result is None:
+        return {}
     # For some reason column descriptions are (column_name, None * 6)
     columns = tuple(name[0] for name in cursor.description)
     cursor.close()
-    return (result, columns)
+    return {key: value for key, value in zip(columns, result)}
 
 
-def get_tag(cursor, key, tag_category):
-    cursor = db.cursor()
+def get_tag(db, key, tag_category):
+    tags = get_all_tags(db, key)
+    if not tag_category in tags:
+        return None
+    return tags[tag_category]
+
+
+def cycle_tag(db, key, tag_category):
+    possible_values = CATEGORY_VALUES[tag_category]
+    current_value = get_tag(db, key, tag_category)
+    if current_value is None or not current_value in possible_values:
+        current_value = possible_values[0]
+    next_value = possible_values[
+        (possible_values.index(current_value) + 1) % len(possible_values)
+    ]
+    set_tag(db, key, tag_category, next_value)
 
 
 def init_schema(db):
@@ -41,8 +64,9 @@ def init_schema(db):
         """
         CREATE TABLE IF NOT EXISTS wallpapers (
             id TEXT PRIMARY KEY,
-            color TEXT,
-            people TEXT)
+            color TEXT DEFAULT warm,
+            people TEXT DEFAULT many,
+            time TEXT DEFAULT night)
         """
     )
     cursor.close()
@@ -60,7 +84,7 @@ def get_file_hash(filename):
 
 
 def resolve_key(args):
-    if "key" in args:
+    if args.key:
         return args.key
     else:
         return get_file_hash(args.filename)
@@ -84,16 +108,26 @@ if __name__ == "__main__":
     key_group.add_argument("--key", "-k")
     get_parser.add_argument("--category", default=None)
 
+    cycle_parser = subparser.add_parser("cycle")
+    key_group = cycle_parser.add_mutually_exclusive_group(required=True)
+    key_group.add_argument("--filename", "-f")
+    key_group.add_argument("--key", "-k")
+    cycle_parser.add_argument("category")
+
     args = parser.parse_args()
-    if not "subcommand" in args:
+    if not args.subcommand:
         parser.print_help()
     else:
-        db = sqlite3.connect(args.db)
+        db = sqlite3.connect(os.path.expanduser(args.db))
         init_schema(db)
         key = resolve_key(args)
         if args.subcommand == "set":
-            print(args)
             set_tag(db, key, args.category, args.tag)
             print(args.tag)
         elif args.subcommand == "get":
-            print(get_all_tags(db, key))
+            if args.category == None:
+                print(get_all_tags(db, key))
+            else:
+                print(get_tag(db, key, args.category))
+        elif args.subcommand == "cycle":
+            cycle_tag(db, key, args.category)
